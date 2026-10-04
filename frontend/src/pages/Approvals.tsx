@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { TimesheetEntry } from '../api/client'
-import { splitBulkResults } from '../approvals/bulk'
+import { describeOutcome, splitBulkResults } from '../approvals/bulk'
 import { entryCost, formatPounds, totalCost } from '../approvals/cost'
 import { formatEntryDate } from '../approvals/dates'
 import { WeekCostChart } from '../approvals/WeekCostChart'
@@ -30,6 +30,9 @@ const emptyFilters: InboxFilters = {
   dateFrom: '',
   dateTo: '',
 }
+
+// Only the inbox drops rows optimistically. Other timesheet views refetch once decisions settle.
+const INBOX_KEY = ['timesheets', 'inbox'] as const
 
 function sortOldestFirst(entries: TimesheetEntry[]): TimesheetEntry[] {
   return [...entries].sort((left, right) => left.date.localeCompare(right.date) || left.id - right.id)
@@ -179,11 +182,15 @@ function Chevrons({ direction }: { direction: 'left' | 'right' }) {
   )
 }
 
+function decisionLabel(entry: TimesheetEntry): string {
+  return `${entry.freelancer.name} (${formatEntryDate(entry.date)})`
+}
+
 function decisionSubject(rows: TimesheetEntry[], ids: number[]): string {
   if (ids.length !== 1) return `${ids.length} timesheets`
   const entry = rows.find((row) => row.id === ids[0])
   if (!entry) return '1 timesheet'
-  return `${entry.freelancer.name} on ${formatEntryDate(entry.date)}`
+  return decisionLabel(entry)
 }
 
 function ConfirmDialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -250,11 +257,6 @@ function ConfirmDialog({ title, onClose, children }: { title: string; onClose: (
   )
 }
 
-function snapshotEntries(snapshot: TimesheetPage | TimesheetEntry[] | undefined): TimesheetEntry[] {
-  if (!snapshot) return []
-  return Array.isArray(snapshot) ? snapshot : snapshot.results
-}
-
 export default function Approvals() {
   const { isAdmin } = useAuth()
   const queryClient = useQueryClient()
@@ -267,8 +269,9 @@ export default function Approvals() {
   const [rejectIds, setRejectIds] = useState<number[] | null>(null)
   const [decisionRows, setDecisionRows] = useState<TimesheetEntry[]>([])
   const [reason, setReason] = useState('')
-  const [failureMessage, setFailureMessage] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const filtersActive = Object.values(filters).some((value) => value !== '')
+  const rangeInvalid = filters.dateFrom !== '' && filters.dateTo !== '' && filters.dateFrom > filters.dateTo
 
   const decision = useMutation({
     mutationFn: async (input: { ids: number[]; status: 'approved' | 'rejected'; rejectionReason?: string }) => {
@@ -285,61 +288,58 @@ export default function Approvals() {
       return splitBulkResults(input.ids, results)
     },
     onMutate: async (input) => {
-      setFailureMessage(null)
-      await queryClient.cancelQueries({ queryKey: ['timesheets'] })
-      const snapshots = queryClient.getQueriesData<TimesheetPage | TimesheetEntry[]>({ queryKey: ['timesheets'] })
+      setNotice(null)
+      await queryClient.cancelQueries({ queryKey: INBOX_KEY })
+      const snapshots = queryClient.getQueriesData<TimesheetPage>({ queryKey: INBOX_KEY })
       const removing = new Set(input.ids)
-      queryClient.setQueriesData<TimesheetPage | TimesheetEntry[]>({ queryKey: ['timesheets'] }, (current) => {
+      queryClient.setQueriesData<TimesheetPage>({ queryKey: INBOX_KEY }, (current) => {
         if (!current) return current
-        if (Array.isArray(current)) return current.filter((entry) => !removing.has(entry.id))
         const results = current.results.filter((entry) => !removing.has(entry.id))
         const removed = current.results.length - results.length
         return { ...current, results, count: Math.max(0, current.count - removed) }
       })
       return { snapshots }
     },
-    onSuccess: (outcome, _input, context) => {
+    onSuccess: (outcome, input, context) => {
       const lookup = new Map<number, TimesheetEntry>()
       for (const [, snapshot] of context?.snapshots ?? []) {
-        for (const entry of snapshotEntries(snapshot)) lookup.set(entry.id, entry)
+        for (const entry of snapshot?.results ?? []) lookup.set(entry.id, entry)
       }
-      if (outcome.failed.length > 0) {
-        const failedIds = new Set(outcome.failed.map((item) => item.id))
+      // Put back only rows that can still be decided. A 404 or 409 means someone else got there first.
+      const retryIds = new Set(outcome.failed.map((failure) => failure.id))
+      if (retryIds.size > 0) {
         for (const [key, snapshot] of context?.snapshots ?? []) {
-          const restored = snapshotEntries(snapshot).filter((entry) => failedIds.has(entry.id))
-          queryClient.setQueryData<TimesheetPage | TimesheetEntry[]>(key, (current) => {
+          const restored = (snapshot?.results ?? []).filter((entry) => retryIds.has(entry.id))
+          queryClient.setQueryData<TimesheetPage>(key, (current) => {
             if (!current) return current
-            if (Array.isArray(current)) {
-              const present = new Set(current.map((entry) => entry.id))
-              return [...current, ...restored.filter((entry) => !present.has(entry.id))]
-            }
             const present = new Set(current.results.map((entry) => entry.id))
             const missing = restored.filter((entry) => !present.has(entry.id))
             return { ...current, results: [...current.results, ...missing], count: current.count + missing.length }
           })
         }
-        const details = outcome.failed.map((item) => {
-          const entry = lookup.get(item.id)
-          const label = entry
-            ? `${entry.freelancer.name} on ${formatEntryDate(entry.date)}`
-            : `entry ${item.id}`
-          return `${label} (HTTP ${item.status || 'error'})`
-        })
-        setFailureMessage(`Some rows were not updated: ${details.join('; ')}.`)
-        setSelectedIds(new Set(outcome.failed.map((item) => item.id)))
-        return
       }
-      setFailureMessage(null)
+      setNotice(
+        describeOutcome(input.status, outcome, (id) => {
+          const entry = lookup.get(id)
+          return entry ? decisionLabel(entry) : `entry ${id}`
+        }),
+      )
+      // Keep any other selection; rows that failed stay selected so a retry sends only them.
+      setSelectedIds((current) => {
+        const next = new Set(current)
+        for (const id of input.ids) next.delete(id)
+        for (const id of retryIds) next.add(id)
+        return next
+      })
       setApproveIds(null)
       setRejectIds(null)
       setReason('')
-      setSelectedIds(new Set())
     },
     onError: (_error, _input, context) => {
       for (const [key, snapshot] of context?.snapshots ?? []) {
         queryClient.setQueryData(key, snapshot)
       }
-      setFailureMessage('The approval request did not finish. The queue has been restored.')
+      setNotice('The decisions did not finish. The queue has been restored.')
     },
     onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: ['timesheets'] })
@@ -347,7 +347,7 @@ export default function Approvals() {
   })
 
   const entriesQuery = useQuery({
-    queryKey: ['timesheets', { status: 'submitted', page, pageSize, ...filters }],
+    queryKey: [...INBOX_KEY, { status: 'submitted', page, pageSize, ...filters }],
     queryFn: () =>
       fetchTimesheetPage({
         status: 'submitted',
@@ -358,20 +358,21 @@ export default function Approvals() {
         dateFrom: filters.dateFrom || undefined,
         dateTo: filters.dateTo || undefined,
       }),
-    enabled: isAdmin,
+    enabled: isAdmin && !rangeInvalid,
     placeholderData: keepPreviousData,
   })
 
   const totalCount = entriesQuery.data?.count ?? 0
   const pageCount = Math.max(1, Math.ceil(totalCount / pageSize))
   useEffect(() => {
-    if (entriesQuery.data && page > pageCount) setPage(pageCount)
-  }, [entriesQuery.data, page, pageCount])
+    if (entriesQuery.data && !decision.isPending && page > pageCount) setPage(pageCount)
+  }, [entriesQuery.data, decision.isPending, page, pageCount])
 
   function clearSelection() {
     setSelectedIds(new Set())
     setApproveIds(null)
     setRejectIds(null)
+    setNotice(null)
   }
 
   function askToApprove(rows: TimesheetEntry[]) {
@@ -518,6 +519,7 @@ export default function Approvals() {
             <input
               type="date"
               value={filters.dateFrom}
+              max={filters.dateTo || undefined}
               onChange={(event) => changeFilters((current) => ({ ...current, dateFrom: event.target.value }))}
               className={filterFieldClass}
             />
@@ -527,11 +529,13 @@ export default function Approvals() {
             <input
               type="date"
               value={filters.dateTo}
+              min={filters.dateFrom || undefined}
               onChange={(event) => changeFilters((current) => ({ ...current, dateTo: event.target.value }))}
               className={filterFieldClass}
             />
           </label>
         </div>
+        {rangeInvalid && <p className="mt-3 text-sm text-red-700">From must be on or before To.</p>}
         {filtersActive && (
           <button
             type="button"
@@ -540,6 +544,12 @@ export default function Approvals() {
           >
             Clear filters
           </button>
+        )}
+      </div>
+
+      <div role="status" aria-live="polite">
+        {notice && (
+          <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">{notice}</div>
         )}
       </div>
 
@@ -569,6 +579,8 @@ export default function Approvals() {
             Nothing is waiting on you. When a freelancer submits hours, they will land here ready to approve.
           </p>
         </div>
+      ) : entries.length === 0 && totalCount > 0 ? (
+        <p className="text-slate-500 text-sm">Loading the next submitted hours…</p>
       ) : entries.length === 0 ? (
         <div className="bg-white border border-slate-200 rounded-lg px-6 py-10 text-center">
           <p className="text-slate-800 font-medium">No rows match these filters</p>
@@ -620,11 +632,6 @@ export default function Approvals() {
               </button>
             </div>
           </div>
-          {failureMessage && (
-            <div className="border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {failureMessage}
-            </div>
-          )}
           <table className="w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
@@ -802,6 +809,7 @@ export default function Approvals() {
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
+              data-dialog-focus
               onClick={() => setApproveIds(null)}
               className="rounded-full px-4 py-2 text-sm text-slate-600 hover:bg-slate-100"
             >
@@ -809,7 +817,6 @@ export default function Approvals() {
             </button>
             <button
               type="button"
-              data-dialog-focus
               disabled={decision.isPending}
               onClick={() => decision.mutate({ ids: approveIds, status: 'approved' })}
               className="rounded-full bg-indigo-600 px-4 py-2 text-sm text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
