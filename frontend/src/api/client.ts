@@ -31,6 +31,8 @@ export interface TimesheetEntry {
   id: number
   contract: number
   contract_id: number
+  freelancer: { id: number; name: string }
+  daily_rate: string
   date: string
   hours: string
   status: 'draft' | 'submitted' | 'approved' | 'rejected'
