@@ -1,7 +1,8 @@
-import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import DecimalField, F, Sum, Value
+from django.db.models.functions import Round, TruncWeek
 from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -56,13 +57,16 @@ def _page_params(request):
 def _filter_options(queryset):
     contracts = {}
     freelancers = {}
-    option_rows = queryset.values_list(
+    option_rows = queryset.order_by().values_list(
         'contract_id',
         'contract__freelancer_id',
         'contract__freelancer__name',
-    )
-    for contract_id, freelancer_id, freelancer_name in option_rows:
-        contracts[contract_id] = freelancer_name
+        'contract__daily_rate',
+        'contract__start_date',
+        'contract__end_date',
+    ).distinct()
+    for contract_id, freelancer_id, freelancer_name, daily_rate, start_date, end_date in option_rows:
+        contracts[contract_id] = f'{freelancer_name} · £{daily_rate}/day · {start_date:%b %Y}–{end_date:%b %Y}'
         freelancers[freelancer_id] = freelancer_name
     contract_options = [
         {'id': contract_id, 'name': name}
@@ -76,16 +80,20 @@ def _filter_options(queryset):
 
 
 def _week_costs(queryset):
-    totals = {}
-    for entry_date, hours, daily_rate in queryset.values_list('date', 'hours', 'contract__daily_rate'):
-        week_start = entry_date - datetime.timedelta(days=entry_date.weekday())
-        amount = (hours * daily_rate) / Decimal('8')
-        totals[week_start] = totals.get(week_start, Decimal('0')) + amount
-    weeks = []
-    for week_start in sorted(totals):
-        cost = totals[week_start].quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-        weeks.append({'week_start': week_start.isoformat(), 'cost': format(cost, 'f')})
-    return weeks
+    # Each row is rounded to the penny before it is summed, so a week equals the rows shown for it.
+    row_cost = Round(
+        F('hours') * F('contract__daily_rate') / Value(Decimal('8')),
+        precision=2,
+        output_field=DecimalField(max_digits=14, decimal_places=2),
+    )
+    weeks = (
+        queryset.order_by()
+        .annotate(week_start=TruncWeek('date'))
+        .values('week_start')
+        .annotate(cost=Sum(row_cost))
+        .order_by('week_start')
+    )
+    return [{'week_start': week['week_start'].isoformat(), 'cost': format(week['cost'], 'f')} for week in weeks]
 
 
 class ContractListView(APIView):

@@ -18,4 +18,14 @@ describe('entry cost', () => {
     expect(formatPounds(10225)).toBe('£10,225.00')
     expect(formatPounds(450)).toBe('£450.00')
   })
+
+  it('rounds each row to the penny so the total matches the rows', () => {
+    const rows = [1, 2, 3].map(() => ({ hours: '7.5', daily_rate: '333.33' }))
+    expect(formatPounds(entryCost('7.5', '333.33'))).toBe('£312.50')
+    expect(formatPounds(totalCost(rows))).toBe('£937.50')
+  })
+
+  it('puts a minus sign before the pound sign', () => {
+    expect(formatPounds(-1234.5)).toBe('-£1,234.50')
+  })
 })

@@ -485,3 +485,27 @@ def test_approval_locks_only_the_entry_row(admin_client, submitted_entry):
     locking = [query['sql'] for query in queries.captured_queries if 'FOR UPDATE' in query['sql']]
     assert len(locking) == 1
     assert 'FOR UPDATE OF "contracts_timesheetentry"' in locking[0]
+
+
+@pytest.mark.django_db
+def test_week_cost_is_the_sum_of_rounded_rows(admin_client, active_contract):
+    active_contract.daily_rate = Decimal('333.33')
+    active_contract.save(update_fields=['daily_rate'])
+    for day in (5, 6, 7):
+        TimesheetEntry.objects.create(
+            contract=active_contract,
+            date=datetime.date(2026, 10, day),
+            hours=Decimal('7.5'),
+            status='submitted',
+        )
+    resp = admin_client.get('/api/timesheets/?status=submitted')
+    assert resp.data['weeks'] == [{'week_start': '2026-10-05', 'cost': '937.50'}]
+
+
+@pytest.mark.django_db
+def test_contract_options_name_the_rate_and_period(admin_client, submitted_entry, active_contract):
+    resp = admin_client.get('/api/timesheets/?status=submitted')
+    assert resp.data['contracts'] == [
+        {'id': active_contract.id, 'name': 'Test Freelancer · £600.00/day · Jan 2026–Dec 2026'},
+    ]
+    assert resp.data['freelancers'] == [{'id': active_contract.freelancer_id, 'name': 'Test Freelancer'}]
