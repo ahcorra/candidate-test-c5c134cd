@@ -83,8 +83,8 @@ class Command(BaseCommand):
         y = today.year
 
         contract_specs = [
-            (northstar, alex,   Decimal('600.00'), datetime.date(y, 1, 1),        datetime.date(y, 6, 30),        'active'),
-            (northstar, sam,    Decimal('500.00'), datetime.date(y, 2, 1),        datetime.date(y, 7, 31),        'active'),
+            (northstar, alex,   Decimal('600.00'), datetime.date(y, 1, 1),        datetime.date(y, 12, 31),       'active'),
+            (northstar, sam,    Decimal('500.00'), datetime.date(y, 2, 1),        datetime.date(y, 12, 31),       'active'),
             (northstar, jordan, Decimal('450.00'), datetime.date(y - 1, 10, 1),   datetime.date(y, 3, 31),        'closed'),
             (meridian,  alex,   Decimal('700.00'), datetime.date(y, 1, 15),       datetime.date(y, 12, 31),       'active'),
             (meridian,  taylor, Decimal('400.00'), datetime.date(y, 3, 1),        datetime.date(y, 9, 30),        'active'),
@@ -99,6 +99,11 @@ class Command(BaseCommand):
                 start_date=start,
                 defaults={'daily_rate': rate, 'end_date': end, 'status': bstatus},
             )
+            if contract.end_date != end or contract.status != bstatus or contract.daily_rate != rate:
+                contract.end_date = end
+                contract.status = bstatus
+                contract.daily_rate = rate
+                contract.save(update_fields=['end_date', 'status', 'daily_rate'])
             contracts.append(contract)
 
         self.stdout.write('Seeding timesheet entries…')
@@ -121,10 +126,15 @@ class Command(BaseCommand):
             if not all_days:
                 continue
 
-            # Target ~7 entries per contract; sample evenly across the date range
+            # Target ~7 entries per contract; sample evenly across the date range.
+            # The even sample misses the end of a long year, so also keep the latest
+            # working days. Current-month days stay draft or submitted.
             target = 7
             step = max(1, len(all_days) // target)
             selected = all_days[::step][:target]
+            for recent_day in all_days[-4:]:
+                if recent_day not in selected:
+                    selected.append(recent_day)
 
             for i, day in enumerate(selected):
                 if day < two_months_ago_start:
