@@ -1,3 +1,60 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@keyframes approval-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes approval-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.approval-check {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+@keyframes approval-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .approval-rise {
+    animation: approval-rise 0.45s ease-out both;
+  }
+
+  .approval-check {
+    animation: approval-draw 0.7s ease-out 0.1s forwards;
+  }
+
+  .approval-pulse {
+    animation: approval-pulse 1.8s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .approval-check {
+    stroke-dashoffset: 0;
+  }
+}

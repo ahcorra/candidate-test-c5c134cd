@@ -2,7 +2,8 @@
 Seed command — idempotent. Safe to run multiple times.
 
 Produces:
-  2 companies, 4 freelancers, 6 contracts, ~42 timesheet entries.
+  2 companies, 4 freelancers, 6 contracts, the sampled history,
+  and a NorthStar pending inbox on the recent working days the history leaves empty.
   Dates anchor to today so March and April are always the two complete
   prior calendar months relative to the seed run.
 
@@ -21,6 +22,41 @@ from accounts.models import Company, CompanyAdmin, Freelancer
 from contracts.models import Contract, TimesheetEntry
 
 SEED_PASSWORD = 'testpass123'
+
+
+def _seed_northstar_pending(contracts, today):
+    """Fill the NorthStar inbox so a reviewer can page through submitted hours.
+
+    Of the last 48 working days for Alex and Sam, the ones the sampled history
+    left empty are submitted. That is enough for the default page of 20, a page
+    of 50, and a single page of 100. Days the history already has keep their
+    status, so the approved months that billing reads stay intact.
+    """
+    targets = [
+        contract for contract in contracts
+        if contract.company.name == 'NorthStar Consulting' and contract.status == 'active'
+    ]
+    horizon_start = today - datetime.timedelta(days=80)
+    pending_days = _working_days(horizon_start, today - datetime.timedelta(days=1))[-48:]
+    created = 0
+    for contract in targets:
+        for index, day in enumerate(pending_days):
+            if day < contract.start_date or day > contract.end_date:
+                continue
+            if index % 4 == 0:
+                hours = Decimal('6.0')
+            elif index % 2 == 0:
+                hours = Decimal('7.5')
+            else:
+                hours = Decimal('8.0')
+            _, was_created = TimesheetEntry.objects.get_or_create(
+                contract=contract,
+                date=day,
+                defaults={'hours': hours, 'status': 'submitted'},
+            )
+            if was_created:
+                created += 1
+    return created
 
 
 def _working_days(start: datetime.date, end: datetime.date) -> list[datetime.date]:
@@ -83,8 +119,8 @@ class Command(BaseCommand):
         y = today.year
 
         contract_specs = [
-            (northstar, alex,   Decimal('600.00'), datetime.date(y, 1, 1),        datetime.date(y, 6, 30),        'active'),
-            (northstar, sam,    Decimal('500.00'), datetime.date(y, 2, 1),        datetime.date(y, 7, 31),        'active'),
+            (northstar, alex,   Decimal('600.00'), datetime.date(y, 1, 1),        datetime.date(y, 12, 31),       'active'),
+            (northstar, sam,    Decimal('500.00'), datetime.date(y, 2, 1),        datetime.date(y, 12, 31),       'active'),
             (northstar, jordan, Decimal('450.00'), datetime.date(y - 1, 10, 1),   datetime.date(y, 3, 31),        'closed'),
             (meridian,  alex,   Decimal('700.00'), datetime.date(y, 1, 15),       datetime.date(y, 12, 31),       'active'),
             (meridian,  taylor, Decimal('400.00'), datetime.date(y, 3, 1),        datetime.date(y, 9, 30),        'active'),
@@ -99,6 +135,11 @@ class Command(BaseCommand):
                 start_date=start,
                 defaults={'daily_rate': rate, 'end_date': end, 'status': bstatus},
             )
+            if contract.end_date != end or contract.status != bstatus or contract.daily_rate != rate:
+                contract.end_date = end
+                contract.status = bstatus
+                contract.daily_rate = rate
+                contract.save(update_fields=['end_date', 'status', 'daily_rate'])
             contracts.append(contract)
 
         self.stdout.write('Seeding timesheet entries…')
@@ -121,10 +162,15 @@ class Command(BaseCommand):
             if not all_days:
                 continue
 
-            # Target ~7 entries per contract; sample evenly across the date range
+            # Target ~7 entries per contract; sample evenly across the date range.
+            # The even sample misses the end of a long year, so also keep the latest
+            # working days. Current-month days stay draft or submitted.
             target = 7
             step = max(1, len(all_days) // target)
             selected = all_days[::step][:target]
+            for recent_day in all_days[-4:]:
+                if recent_day not in selected:
+                    selected.append(recent_day)
 
             for i, day in enumerate(selected):
                 if day < two_months_ago_start:
@@ -158,8 +204,13 @@ class Command(BaseCommand):
                 )
                 entry_count += 1
 
+        pending_count = _seed_northstar_pending(contracts, today)
+
         self.stdout.write(self.style.SUCCESS(
-            f'Done — {entry_count} timesheet entries across {len(contracts)} contracts.'
+            f'Done — {entry_count} sampled timesheet entries across {len(contracts)} contracts.'
+        ))
+        self.stdout.write(self.style.SUCCESS(
+            f'NorthStar inbox — {pending_count} submitted rows for the approvals queue.'
         ))
         self.stdout.write(self.style.SUCCESS(
             'Credentials:  admin@northstar.test / testpass123  |  alex@freelance.test / testpass123'

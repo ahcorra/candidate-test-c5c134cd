@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from accounts.models import Freelancer
 from accounts.serializers import CompanySerializer, FreelancerSerializer
 from .models import Contract, TimesheetEntry
 
@@ -32,11 +33,45 @@ class ContractCreateSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class TimesheetFreelancerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Freelancer
+        fields = ['id', 'name']
+
+
 class TimesheetEntrySerializer(serializers.ModelSerializer):
-    # TODO: move validation logic (rejection_reason check) out of the view and into validate() here
     contract_id = serializers.IntegerField(read_only=True)  # redundant: 'contract' already exposes the FK id
+    freelancer = TimesheetFreelancerSerializer(source='contract.freelancer', read_only=True)
+    daily_rate = serializers.DecimalField(
+        max_digits=8, decimal_places=2, read_only=True, source='contract.daily_rate'
+    )
 
     class Meta:
         model = TimesheetEntry
-        fields = ['id', 'contract', 'contract_id', 'date', 'hours', 'status', 'rejection_reason']
+        fields = [
+            'id',
+            'contract',
+            'contract_id',
+            'freelancer',
+            'daily_rate',
+            'date',
+            'hours',
+            'status',
+            'rejection_reason',
+        ]
         read_only_fields = ['id', 'contract_id']
+        extra_kwargs = {'rejection_reason': {'max_length': 1000}}
+
+    def validate(self, attrs):
+        status = attrs.get('status', getattr(self.instance, 'status', None))
+        if status != TimesheetEntry.STATUS_REJECTED:
+            return attrs
+
+        # The reason must come with the rejection itself, never from a value stored earlier.
+        reason = str(attrs.get('rejection_reason') or '').strip()
+        if not any(char.isprintable() and not char.isspace() for char in reason):
+            raise serializers.ValidationError({
+                'rejection_reason': 'This field is required when rejecting an entry.',
+            })
+        attrs['rejection_reason'] = reason
+        return attrs
