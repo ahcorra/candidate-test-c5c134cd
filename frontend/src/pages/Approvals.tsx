@@ -105,6 +105,8 @@ const approveCircleClass =
   'inline-flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600/10 text-indigo-700 hover:bg-indigo-600/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:opacity-40 disabled:cursor-not-allowed'
 const rejectCircleClass =
   'inline-flex h-6 w-6 items-center justify-center rounded-full bg-red-600/10 text-red-700 hover:bg-red-600/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 disabled:opacity-40 disabled:cursor-not-allowed'
+const filterFieldClass =
+  'mt-1 box-border h-10 w-full rounded-lg border border-slate-200 bg-white px-3 py-0 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 [&::-webkit-datetime-edit]:p-0 [&::-webkit-datetime-edit-fields-wrapper]:p-0'
 const approveBulkClass =
   'inline-flex items-center gap-1.5 rounded-full bg-indigo-600/10 text-indigo-700 text-sm px-3 py-1.5 hover:bg-indigo-600/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/40 disabled:opacity-40 disabled:cursor-not-allowed'
 const rejectBulkClass =
@@ -486,7 +488,7 @@ export default function Approvals() {
             <select
               value={filters.contractId}
               onChange={(event) => changeFilters((current) => ({ ...current, contractId: event.target.value }))}
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className={filterFieldClass}
             >
               <option value="">All contracts</option>
               {contractOptions.map((option) => (
@@ -501,7 +503,7 @@ export default function Approvals() {
             <select
               value={filters.freelancerId}
               onChange={(event) => changeFilters((current) => ({ ...current, freelancerId: event.target.value }))}
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className={filterFieldClass}
             >
               <option value="">All freelancers</option>
               {freelancerOptions.map((option) => (
@@ -517,7 +519,7 @@ export default function Approvals() {
               type="date"
               value={filters.dateFrom}
               onChange={(event) => changeFilters((current) => ({ ...current, dateFrom: event.target.value }))}
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className={filterFieldClass}
             />
           </label>
           <label className="block text-sm">
@@ -526,7 +528,7 @@ export default function Approvals() {
               type="date"
               value={filters.dateTo}
               onChange={(event) => changeFilters((current) => ({ ...current, dateTo: event.target.value }))}
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className={filterFieldClass}
             />
           </label>
         </div>
@@ -626,13 +628,13 @@ export default function Approvals() {
           <table className="w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
-                  <th className="pl-3 pr-2 py-2.5 w-8">
+                  <th className="w-8 px-3 py-2.5 text-left">
                     <input
                       type="checkbox"
                       aria-label="Select all rows on this page"
                       checked={allVisibleSelected}
                       onChange={toggleAllVisible}
-                      className="accent-indigo-600"
+                      className="accent-indigo-600 align-middle"
                     />
                   </th>
                   <th className="text-left pl-8 pr-4 py-2.5 font-medium text-slate-600">Freelancer</th>
