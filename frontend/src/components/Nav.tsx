@@ -21,6 +21,9 @@ export function Nav() {
         </Link>
         {isAdmin && (
           <>
+            <Link to="/approvals" className="text-indigo-200 hover:text-white text-sm">
+              Approvals
+            </Link>
             <Link to="/billing" className="text-indigo-200 hover:text-white text-sm">
               Billing
             </Link>
