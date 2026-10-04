@@ -1,0 +1,58 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: yunojuno
+          POSTGRES_PASSWORD: yunojuno
+          POSTGRES_DB: yunojuno
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U yunojuno -d yunojuno"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DB_HOST: localhost
+      DB_NAME: yunojuno
+      DB_USER: yunojuno
+      DB_PASSWORD: yunojuno
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - name: Run backend tests
+        working-directory: backend
+        run: uv sync --frozen && uv run pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Run frontend unit tests
+        working-directory: frontend
+        run: |
+          if node -e "process.exit(require('./package.json').scripts && require('./package.json').scripts.test ? 0 : 1)"; then
+            pnpm install --frozen-lockfile
+            pnpm test
+          else
+            echo "No frontend test script on this branch."
+          fi
