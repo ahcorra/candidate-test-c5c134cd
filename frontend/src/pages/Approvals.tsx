@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { TimesheetEntry } from '../api/client'
@@ -5,15 +6,57 @@ import { fetchTimesheets } from '../api/timesheets'
 import { StatusBadge } from '../components/StatusBadge'
 import { useAuth } from '../hooks/useAuth'
 
+interface InboxFilters {
+  contractId: string
+  freelancerId: string
+  dateFrom: string
+  dateTo: string
+}
+
+const emptyFilters: InboxFilters = {
+  contractId: '',
+  freelancerId: '',
+  dateFrom: '',
+  dateTo: '',
+}
+
 function sortOldestFirst(entries: TimesheetEntry[]): TimesheetEntry[] {
   return [...entries].sort((left, right) => left.date.localeCompare(right.date))
 }
 
+function uniqueOptions(entries: TimesheetEntry[], kind: 'contract' | 'freelancer'): Array<[string, string]> {
+  const seen = new Map<string, string>()
+  for (const entry of entries) {
+    if (kind === 'contract') {
+      seen.set(String(entry.contract), entry.freelancer.name)
+    } else {
+      seen.set(String(entry.freelancer.id), entry.freelancer.name)
+    }
+  }
+  return [...seen.entries()].sort((left, right) => left[1].localeCompare(right[1]))
+}
+
 export default function Approvals() {
   const { isAdmin } = useAuth()
-  const entriesQuery = useQuery({
+  const [filters, setFilters] = useState<InboxFilters>(emptyFilters)
+  const filtersActive = Object.values(filters).some((value) => value !== '')
+
+  const optionsQuery = useQuery({
     queryKey: ['timesheets', { status: 'submitted' }],
     queryFn: () => fetchTimesheets({ status: 'submitted' }),
+    enabled: isAdmin,
+  })
+
+  const entriesQuery = useQuery({
+    queryKey: ['timesheets', { status: 'submitted', ...filters }],
+    queryFn: () =>
+      fetchTimesheets({
+        status: 'submitted',
+        contract: filters.contractId ? Number(filters.contractId) : undefined,
+        freelancer: filters.freelancerId ? Number(filters.freelancerId) : undefined,
+        dateFrom: filters.dateFrom || undefined,
+        dateTo: filters.dateTo || undefined,
+      }),
     enabled: isAdmin,
   })
 
@@ -30,6 +73,10 @@ export default function Approvals() {
   }
 
   const entries = sortOldestFirst(entriesQuery.data ?? [])
+  const optionSource = optionsQuery.data ?? []
+  const isLoading = optionsQuery.isLoading || entriesQuery.isLoading
+  const isError = optionsQuery.isError || entriesQuery.isError
+  const nothingWaiting = !isLoading && !isError && (optionsQuery.data?.length ?? 0) === 0
 
   return (
     <div className="space-y-6">
@@ -38,18 +85,91 @@ export default function Approvals() {
         <p className="text-slate-500 text-sm">Submitted hours waiting for a decision.</p>
       </div>
 
-      {entriesQuery.isLoading ? (
+      <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <label className="block text-sm">
+            <span className="font-medium text-slate-700">Contract</span>
+            <select
+              value={filters.contractId}
+              onChange={(event) => setFilters((current) => ({ ...current, contractId: event.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">All contracts</option>
+              {uniqueOptions(optionSource, 'contract').map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="font-medium text-slate-700">Freelancer</span>
+            <select
+              value={filters.freelancerId}
+              onChange={(event) => setFilters((current) => ({ ...current, freelancerId: event.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">All freelancers</option>
+              {uniqueOptions(optionSource, 'freelancer').map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="font-medium text-slate-700">From</span>
+            <input
+              type="date"
+              value={filters.dateFrom}
+              onChange={(event) => setFilters((current) => ({ ...current, dateFrom: event.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="font-medium text-slate-700">To</span>
+            <input
+              type="date"
+              value={filters.dateTo}
+              onChange={(event) => setFilters((current) => ({ ...current, dateTo: event.target.value }))}
+              className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </label>
+        </div>
+        {filtersActive && (
+          <button
+            type="button"
+            onClick={() => setFilters(emptyFilters)}
+            className="mt-3 text-sm text-indigo-600 hover:text-indigo-800"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      {isLoading ? (
         <p className="text-slate-500 text-sm">Loading submitted hours…</p>
-      ) : entriesQuery.isError ? (
+      ) : isError ? (
         <div className="bg-red-50 border border-red-200 text-red-700 rounded px-4 py-3 text-sm">
           Failed to load submitted hours. Please refresh the page.
         </div>
-      ) : entries.length === 0 ? (
+      ) : nothingWaiting ? (
         <div className="bg-white border border-slate-200 rounded-lg px-6 py-10 text-center">
           <p className="text-slate-800 font-medium">Nothing is waiting for approval</p>
           <p className="text-slate-500 text-sm mt-1">
             Submitted hours from your contracts will show up here.
           </p>
+        </div>
+      ) : entries.length === 0 ? (
+        <div className="bg-white border border-slate-200 rounded-lg px-6 py-10 text-center">
+          <p className="text-slate-800 font-medium">No rows match these filters</p>
+          <button
+            type="button"
+            onClick={() => setFilters(emptyFilters)}
+            className="mt-2 text-sm text-indigo-600 hover:text-indigo-800"
+          >
+            Clear filters
+          </button>
         </div>
       ) : (
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
