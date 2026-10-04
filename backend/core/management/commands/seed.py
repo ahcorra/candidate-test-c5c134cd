@@ -3,7 +3,7 @@ Seed command — idempotent. Safe to run multiple times.
 
 Produces:
   2 companies, 4 freelancers, 6 contracts, the sampled history,
-  and a NorthStar pending inbox across recent working days.
+  and a NorthStar pending inbox on the recent working days the history leaves empty.
   Dates anchor to today so March and April are always the two complete
   prior calendar months relative to the seed run.
 
@@ -27,8 +27,10 @@ SEED_PASSWORD = 'testpass123'
 def _seed_northstar_pending(contracts, today):
     """Fill the NorthStar inbox so a reviewer can page through submitted hours.
 
-    The last 48 working days for Alex and Sam are submitted. That is enough
-    for the default page of 20, a page of 50, and a single page of 100.
+    Of the last 48 working days for Alex and Sam, the ones the sampled history
+    left empty are submitted. That is enough for the default page of 20, a page
+    of 50, and a single page of 100. Days the history already has keep their
+    status, so the approved months that billing reads stay intact.
     """
     targets = [
         contract for contract in contracts
@@ -47,12 +49,13 @@ def _seed_northstar_pending(contracts, today):
                 hours = Decimal('7.5')
             else:
                 hours = Decimal('8.0')
-            TimesheetEntry.objects.update_or_create(
+            _, was_created = TimesheetEntry.objects.get_or_create(
                 contract=contract,
                 date=day,
-                defaults={'hours': hours, 'status': 'submitted', 'rejection_reason': None},
+                defaults={'hours': hours, 'status': 'submitted'},
             )
-            created += 1
+            if was_created:
+                created += 1
     return created
 
 

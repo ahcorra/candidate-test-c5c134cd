@@ -65,7 +65,8 @@ export default function ContractDetail() {
 
   const entriesQuery = useQuery({
     queryKey: ['timesheets', { contract: numId }],
-    queryFn: () => fetchAllTimesheets({ contract: numId }),
+    // The API lists oldest first for the approval queue; a contract's history reads newest first.
+    queryFn: async () => (await fetchAllTimesheets({ contract: numId })).reverse(),
     enabled: !!contractQuery.data,
   })
 
