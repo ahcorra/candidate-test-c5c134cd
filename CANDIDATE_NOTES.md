@@ -4,7 +4,7 @@
 
 I built the pending approvals inbox. That screen is where the customer is. A freelancer has already logged the day, and a company admin is about to accept the cost. The inbox is the handoff between those two people. Billing comes after the decision, and a webhook is an integration nobody in that conversation opens. Today the admin has to open every contract to find what is waiting, so the useful product is one queue, a running total before they confirm, and a rejection reason that goes back to the person who logged the time.
 
-I left Task B and Task C. I also left out a bulk endpoint, pagination, a billed status, and any webhook on approve. Those can be built later on the same `submitted` → `approved` transition: billing reads approved rows, and a webhook can be emitted from that same change.
+I left Task B and Task C. I also left out a bulk endpoint, a billed status, and any webhook on approve. Those can be built later on the same `submitted` → `approved` transition: billing reads approved rows, and a webhook can be emitted from that same change. I did not add an end-to-end browser test. The API tests and the frontend tests for cost, dates, and a mixed bulk result already cover the decision. One browser test of the approve and reject happy paths is what I would add next, and I left it out so this pull request stays a reasonable size.
 
 ## Key implementation notes
 
@@ -18,8 +18,8 @@ The seed used to end the NorthStar contracts in June and July and sample working
 
 ## Workflow
 
-I read the timesheet views and tests first, then kept the work in small commits across four stacked pull requests on a fork, so each layer can be reviewed on its own. Nothing is merged to main. Cursor was used to plan the work, implement it, and review the diff, and I read the result before pushing. I do not keep code I have not read. No prompt logs. CI runs from the branch that adds the workflow, with no merge to main.
+I read the timesheet views and tests first, then kept the work in small commits. This is one pull request, as the brief asks. With push access to the provided repository I would have opened three, for the workflow, the timesheet API, and the inbox, so each slice was easier to read. Nothing is merged to main. Cursor was used to plan the work, implement it, and review the diff, and I read the result before pushing. I do not keep code I have not read. No prompt logs. CI runs from the branch that adds the workflow, with no merge to main.
 
 ## Next steps
 
-With another four hours I would add hour bounds on create, pagination plus a total endpoint once the queue grows, expiring auth tokens, and a component test for the reject dialog. Two gaps I am leaving as they are: `GET /api/freelancers/` returns every freelancer to any company admin, and tokens sit in `localStorage` and never expire.
+With another four hours I would add that end-to-end test first: sign in as the company admin, approve one submitted row, and reject another with a reason. After that I would add hour bounds on create and expiring auth tokens. Two gaps I am leaving as they are: `GET /api/freelancers/` returns every freelancer to any company admin, and tokens sit in `localStorage` and never expire.
