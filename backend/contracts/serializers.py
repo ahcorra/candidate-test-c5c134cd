@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from accounts.models import Freelancer
 from accounts.serializers import CompanySerializer, FreelancerSerializer
 from .models import Contract, TimesheetEntry
 
@@ -32,12 +33,32 @@ class ContractCreateSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class TimesheetFreelancerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Freelancer
+        fields = ['id', 'name']
+
+
 class TimesheetEntrySerializer(serializers.ModelSerializer):
     contract_id = serializers.IntegerField(read_only=True)  # redundant: 'contract' already exposes the FK id
+    freelancer = TimesheetFreelancerSerializer(source='contract.freelancer', read_only=True)
+    daily_rate = serializers.DecimalField(
+        max_digits=8, decimal_places=2, read_only=True, source='contract.daily_rate'
+    )
 
     class Meta:
         model = TimesheetEntry
-        fields = ['id', 'contract', 'contract_id', 'date', 'hours', 'status', 'rejection_reason']
+        fields = [
+            'id',
+            'contract',
+            'contract_id',
+            'freelancer',
+            'daily_rate',
+            'date',
+            'hours',
+            'status',
+            'rejection_reason',
+        ]
         read_only_fields = ['id', 'contract_id']
 
     def validate(self, attrs):

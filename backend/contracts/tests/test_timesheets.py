@@ -258,6 +258,76 @@ def test_admin_cannot_change_hours_or_contract_when_approving(admin_client, subm
 
 
 @pytest.mark.django_db
+def test_timesheet_list_rejects_invalid_filters(admin_client, submitted_entry):
+    assert admin_client.get('/api/timesheets/?contract=abc').status_code == 400
+    assert admin_client.get('/api/timesheets/?status=nope').status_code == 400
+    assert admin_client.get('/api/timesheets/?freelancer=no').status_code == 400
+    assert admin_client.get('/api/timesheets/?date_from=2026-13-01').status_code == 400
+    reversed_range = admin_client.get('/api/timesheets/?date_from=2026-05-02&date_to=2026-05-01')
+    assert reversed_range.status_code == 400
+
+
+@pytest.mark.django_db
+def test_timesheet_list_filters_by_freelancer_and_date(admin_client, submitted_entry, active_contract, northstar):
+    from django.contrib.auth.models import User
+    from accounts.models import Freelancer
+    from contracts.models import Contract
+    other_user = User.objects.create_user(username='sam@test.test', email='sam@test.test', password='x')
+    other_freelancer = Freelancer.objects.create(user=other_user, name='Sam Chen')
+    other_contract = Contract.objects.create(
+        company=northstar,
+        freelancer=other_freelancer,
+        daily_rate=Decimal('500.00'),
+        start_date=datetime.date(2026, 1, 1),
+        end_date=datetime.date(2026, 12, 31),
+        status='active',
+    )
+    other_entry = TimesheetEntry.objects.create(
+        contract=other_contract,
+        date=datetime.date(2026, 4, 8),
+        hours=Decimal('8.0'),
+        status='submitted',
+    )
+
+    by_freelancer = admin_client.get(f'/api/timesheets/?freelancer={active_contract.freelancer_id}')
+    assert by_freelancer.status_code == 200
+    assert {row['id'] for row in by_freelancer.data} == {submitted_entry.id}
+
+    by_date = admin_client.get('/api/timesheets/?date_from=2026-04-08&date_to=2026-04-08')
+    assert by_date.status_code == 200
+    assert {row['id'] for row in by_date.data} == {other_entry.id}
+
+
+@pytest.mark.django_db
+def test_timesheet_list_filters_do_not_cross_companies(admin_client, other_contract):
+    TimesheetEntry.objects.create(
+        contract=other_contract,
+        date=datetime.date(2026, 4, 3),
+        hours=Decimal('8.0'),
+        status='submitted',
+    )
+    resp = admin_client.get(
+        f'/api/timesheets/?freelancer={other_contract.freelancer_id}&date_from=2026-04-01&date_to=2026-04-30'
+    )
+    assert resp.status_code == 200
+    assert resp.data == []
+
+
+@pytest.mark.django_db
+def test_timesheet_list_includes_freelancer_and_rate(admin_client, submitted_entry, active_contract):
+    resp = admin_client.get('/api/timesheets/')
+    assert resp.status_code == 200
+    row = next(item for item in resp.data if item['id'] == submitted_entry.id)
+    assert row['contract'] == active_contract.id
+    assert row['contract_id'] == active_contract.id
+    assert row['daily_rate'] == '600.00'
+    assert row['freelancer'] == {
+        'id': active_contract.freelancer_id,
+        'name': active_contract.freelancer.name,
+    }
+
+
+@pytest.mark.django_db
 def test_cannot_approve_entry_that_is_not_submitted(admin_client, active_contract):
     approved = TimesheetEntry.objects.create(
         contract=active_contract,

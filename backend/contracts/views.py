@@ -1,10 +1,25 @@
 from django.db import transaction
+from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Contract, TimesheetEntry
+
+
+def _parse_query_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_query_date(value):
+    try:
+        return parse_date(value)
+    except ValueError:
+        return None
 from .serializers import (
     ContractCreateSerializer,
     ContractSerializer,
@@ -95,16 +110,56 @@ class TimesheetListCreateView(APIView):
         else:
             qs = TimesheetEntry.objects.none()
 
+        qs = qs.select_related('contract__freelancer')
+
         # Filter by status query param
         status_param = request.query_params.get('status')
         if status_param:
+            valid_statuses = {choice for choice, _label in TimesheetEntry.STATUS_CHOICES}
+            if status_param not in valid_statuses:
+                return Response({'status': 'Invalid status.'}, status=status.HTTP_400_BAD_REQUEST)
             qs = qs.filter(status=status_param)
 
         # Filter by contract id query param
         # TODO: move filter logic to a proper FilterSet class when we add django-filter
         contract_param = request.query_params.get('contract')
-        if contract_param:
-            qs = qs.filter(contract_id=contract_param)
+        if contract_param is not None:
+            contract_id = _parse_query_int(contract_param)
+            if contract_id is None:
+                return Response({'contract': 'Must be an integer.'}, status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(contract_id=contract_id)
+
+        freelancer_param = request.query_params.get('freelancer')
+        if freelancer_param is not None:
+            freelancer_id = _parse_query_int(freelancer_param)
+            if freelancer_id is None:
+                return Response({'freelancer': 'Must be an integer.'}, status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(contract__freelancer_id=freelancer_id)
+
+        date_from_param = request.query_params.get('date_from')
+        date_to_param = request.query_params.get('date_to')
+        date_from = date_to = None
+        if date_from_param is not None:
+            date_from = _parse_query_date(date_from_param)
+            if date_from is None:
+                return Response(
+                    {'date_from': 'Must be an ISO date (YYYY-MM-DD).'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(date__gte=date_from)
+        if date_to_param is not None:
+            date_to = _parse_query_date(date_to_param)
+            if date_to is None:
+                return Response(
+                    {'date_to': 'Must be an ISO date (YYYY-MM-DD).'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            qs = qs.filter(date__lte=date_to)
+        if date_from is not None and date_to is not None and date_from > date_to:
+            return Response(
+                {'date_from': 'Must be on or before date_to.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(TimesheetEntrySerializer(qs, many=True).data)
 
