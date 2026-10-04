@@ -6,6 +6,7 @@ import ContractList from './pages/ContractList'
 import NewContract from './pages/NewContract'
 import ContractDetail from './pages/ContractDetail'
 import SubmitHours from './pages/SubmitHours'
+import Approvals from './pages/Approvals'
 import Billing from './pages/Billing'
 import InvoiceDetail from './pages/InvoiceDetail'
 import DeveloperSettings from './pages/DeveloperSettings'
@@ -67,6 +68,16 @@ function AppRoutes() {
           <RequireAuth>
             <Layout>
               <SubmitHours />
+            </Layout>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/approvals"
+        element={
+          <RequireAuth>
+            <Layout>
+              <Approvals />
             </Layout>
           </RequireAuth>
         }
