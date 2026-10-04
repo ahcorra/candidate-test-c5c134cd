@@ -232,12 +232,14 @@ class TimesheetListCreateView(APIView):
         ordered = qs.order_by('date', 'id')
         total = ordered.count()
         start = (page - 1) * page_size
+        # A page past the end is empty without asking the database for an offset it cannot hold.
+        page_rows = ordered[start:start + page_size] if start < total else []
         contracts, freelancers = _filter_options(option_qs)
         return Response({
             'count': total,
             'page': page,
             'page_size': page_size,
-            'results': TimesheetEntrySerializer(ordered[start:start + page_size], many=True).data,
+            'results': TimesheetEntrySerializer(page_rows, many=True).data,
             'weeks': _week_costs(ordered),
             'contracts': contracts,
             'freelancers': freelancers,
@@ -259,13 +261,19 @@ class TimesheetListCreateView(APIView):
         except Contract.DoesNotExist:
             return Response({'contract': 'Invalid contract.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        entry = serializer.save(contract=contract, status=TimesheetEntry.STATUS_SUBMITTED)
+        # A rejection reason is only ever written by the admin who rejects the entry.
+        entry = serializer.save(
+            contract=contract,
+            status=TimesheetEntry.STATUS_SUBMITTED,
+            rejection_reason=None,
+        )
         return Response(TimesheetEntrySerializer(entry).data, status=status.HTTP_201_CREATED)
 
 
 class TimesheetDetailView(APIView):
     permission_classes = [IsAuthenticated]
     approval_fields = {'status', 'rejection_reason'}
+    decisions = (TimesheetEntry.STATUS_APPROVED, TimesheetEntry.STATUS_REJECTED)
 
     def patch(self, request, pk):
         user = request.user
@@ -277,6 +285,9 @@ class TimesheetDetailView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not isinstance(request.data, dict):
+            return Response({'detail': 'Expected a JSON object.'}, status=status.HTTP_400_BAD_REQUEST)
 
         unexpected_fields = set(request.data.keys()) - self.approval_fields
         if unexpected_fields:
@@ -291,22 +302,31 @@ class TimesheetDetailView(APIView):
             )
 
         new_status = request.data.get('status')
+        if new_status not in self.decisions:
+            return Response(
+                {'status': 'Must be "approved" or "rejected".'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         with transaction.atomic():
             try:
+                # Lock only the entry row, so decisions on one contract do not queue behind each other.
                 entry = (
-                    TimesheetEntry.objects.select_for_update()
+                    TimesheetEntry.objects.select_for_update(of=('self',))
+                    .select_related('contract__freelancer')
                     .get(pk=pk, contract__company=user.company_admin.company)
                 )
             except TimesheetEntry.DoesNotExist:
                 return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-            if (
-                entry.status != TimesheetEntry.STATUS_SUBMITTED
-                or new_status not in (
-                    TimesheetEntry.STATUS_APPROVED,
-                    TimesheetEntry.STATUS_REJECTED,
+            # A user can be both a company admin and a freelancer. They still cannot decide their own hours.
+            if entry.contract.freelancer.user_id == user.id:
+                return Response(
+                    {'detail': 'You cannot approve or reject your own hours.'},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-            ):
+
+            if entry.status != TimesheetEntry.STATUS_SUBMITTED:
                 return Response(
                     {'status': 'Only a submitted entry can be approved or rejected.'},
                     status=status.HTTP_409_CONFLICT,
@@ -314,7 +334,7 @@ class TimesheetDetailView(APIView):
 
             payload = {'status': new_status}
             if new_status == TimesheetEntry.STATUS_APPROVED:
-                payload['rejection_reason'] = ''
+                payload['rejection_reason'] = None
             else:
                 payload['rejection_reason'] = request.data.get('rejection_reason')
 

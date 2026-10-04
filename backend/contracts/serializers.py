@@ -60,18 +60,18 @@ class TimesheetEntrySerializer(serializers.ModelSerializer):
             'rejection_reason',
         ]
         read_only_fields = ['id', 'contract_id']
+        extra_kwargs = {'rejection_reason': {'max_length': 1000}}
 
     def validate(self, attrs):
         status = attrs.get('status', getattr(self.instance, 'status', None))
         if status != TimesheetEntry.STATUS_REJECTED:
             return attrs
 
-        reason = attrs.get('rejection_reason')
-        if reason is None and self.instance is not None:
-            reason = self.instance.rejection_reason
-        if reason is None or not str(reason).strip():
+        # The reason must come with the rejection itself, never from a value stored earlier.
+        reason = str(attrs.get('rejection_reason') or '').strip()
+        if not any(char.isprintable() and not char.isspace() for char in reason):
             raise serializers.ValidationError({
                 'rejection_reason': 'This field is required when rejecting an entry.',
             })
-        attrs['rejection_reason'] = str(reason).strip()
+        attrs['rejection_reason'] = reason
         return attrs

@@ -2,6 +2,8 @@ import datetime
 from decimal import Decimal
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
 from contracts.models import TimesheetEntry
 
@@ -227,9 +229,9 @@ def test_approve_clears_rejection_reason(admin_client, submitted_entry):
     submitted_entry.save(update_fields=['rejection_reason'])
     resp = admin_client.patch(f'/api/timesheets/{submitted_entry.id}/', {'status': 'approved'})
     assert resp.status_code == 200
-    assert resp.data['rejection_reason'] in ('', None)
+    assert resp.data['rejection_reason'] is None
     submitted_entry.refresh_from_db()
-    assert submitted_entry.rejection_reason in ('', None)
+    assert submitted_entry.rejection_reason is None
     assert submitted_entry.status == 'approved'
 
 
@@ -397,3 +399,89 @@ def test_timesheet_list_accepts_page_sizes(admin_client, active_contract):
     assert admin_client.get('/api/timesheets/?page_size=10').status_code == 400
     assert admin_client.get('/api/timesheets/?page=0').status_code == 400
     assert admin_client.get('/api/timesheets/?page=abc').status_code == 400
+
+
+@pytest.mark.django_db
+def test_admin_who_is_also_the_freelancer_cannot_decide_own_hours(admin_client, admin_user, northstar):
+    from accounts.models import Freelancer
+    from contracts.models import Contract
+    own_profile = Freelancer.objects.create(user=admin_user, name='Admin Freelancing')
+    own_contract = Contract.objects.create(
+        company=northstar,
+        freelancer=own_profile,
+        daily_rate=Decimal('600.00'),
+        start_date=datetime.date(2026, 1, 1),
+        end_date=datetime.date(2026, 12, 31),
+        status='active',
+    )
+    own_entry = TimesheetEntry.objects.create(
+        contract=own_contract,
+        date=datetime.date(2026, 4, 7),
+        hours=Decimal('8.0'),
+        status='submitted',
+    )
+    resp = admin_client.patch(f'/api/timesheets/{own_entry.id}/', {'status': 'approved'})
+    assert resp.status_code == 403
+    own_entry.refresh_from_db()
+    assert own_entry.status == 'submitted'
+
+
+@pytest.mark.django_db
+def test_reject_needs_a_reason_in_the_request(admin_client, submitted_entry):
+    submitted_entry.rejection_reason = 'Stored earlier'
+    submitted_entry.save(update_fields=['rejection_reason'])
+    resp = admin_client.patch(f'/api/timesheets/{submitted_entry.id}/', {'status': 'rejected'})
+    assert resp.status_code == 400
+    assert 'rejection_reason' in resp.data
+    submitted_entry.refresh_from_db()
+    assert submitted_entry.status == 'submitted'
+
+
+@pytest.mark.django_db
+def test_reject_reason_needs_visible_text_and_a_sane_length(admin_client, submitted_entry):
+    url = f'/api/timesheets/{submitted_entry.id}/'
+    invisible = admin_client.patch(url, {'status': 'rejected', 'rejection_reason': '​'}, format='json')
+    too_long = admin_client.patch(url, {'status': 'rejected', 'rejection_reason': 'x' * 1001}, format='json')
+    assert invisible.status_code == 400
+    assert too_long.status_code == 400
+
+
+@pytest.mark.django_db
+def test_create_ignores_a_rejection_reason(freelancer_client, active_contract):
+    resp = freelancer_client.post('/api/timesheets/', {
+        'contract': active_contract.id,
+        'date': '2026-05-04',
+        'hours': '8.0',
+        'rejection_reason': 'Pre-approved by finance',
+    })
+    assert resp.status_code == 201
+    assert resp.data['rejection_reason'] is None
+
+
+@pytest.mark.django_db
+def test_patch_rejects_a_body_that_is_not_a_decision(admin_client, submitted_entry):
+    url = f'/api/timesheets/{submitted_entry.id}/'
+    assert admin_client.patch(url, [], format='json').status_code == 400
+    assert admin_client.patch(url, 'approved', format='json').status_code == 400
+    assert admin_client.patch(url, {'status': 'draft'}, format='json').status_code == 400
+    assert admin_client.patch(url, {}, format='json').status_code == 400
+    submitted_entry.refresh_from_db()
+    assert submitted_entry.status == 'submitted'
+
+
+@pytest.mark.django_db
+def test_timesheet_list_page_past_the_end_is_empty(admin_client, submitted_entry):
+    resp = admin_client.get('/api/timesheets/?status=submitted&page=1000000000000000000')
+    assert resp.status_code == 200
+    assert resp.data['results'] == []
+    assert resp.data['count'] == 1
+
+
+@pytest.mark.django_db
+def test_approval_locks_only_the_entry_row(admin_client, submitted_entry):
+    with CaptureQueriesContext(connection) as queries:
+        resp = admin_client.patch(f'/api/timesheets/{submitted_entry.id}/', {'status': 'approved'})
+    assert resp.status_code == 200
+    locking = [query['sql'] for query in queries.captured_queries if 'FOR UPDATE' in query['sql']]
+    assert len(locking) == 1
+    assert 'FOR UPDATE OF "contracts_timesheetentry"' in locking[0]
