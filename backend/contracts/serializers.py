@@ -33,10 +33,24 @@ class ContractCreateSerializer(serializers.ModelSerializer):
 
 
 class TimesheetEntrySerializer(serializers.ModelSerializer):
-    # TODO: move validation logic (rejection_reason check) out of the view and into validate() here
     contract_id = serializers.IntegerField(read_only=True)  # redundant: 'contract' already exposes the FK id
 
     class Meta:
         model = TimesheetEntry
         fields = ['id', 'contract', 'contract_id', 'date', 'hours', 'status', 'rejection_reason']
         read_only_fields = ['id', 'contract_id']
+
+    def validate(self, attrs):
+        status = attrs.get('status', getattr(self.instance, 'status', None))
+        if status != TimesheetEntry.STATUS_REJECTED:
+            return attrs
+
+        reason = attrs.get('rejection_reason')
+        if reason is None and self.instance is not None:
+            reason = self.instance.rejection_reason
+        if reason is None or not str(reason).strip():
+            raise serializers.ValidationError({
+                'rejection_reason': 'This field is required when rejecting an entry.',
+            })
+        attrs['rejection_reason'] = str(reason).strip()
+        return attrs

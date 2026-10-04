@@ -192,3 +192,88 @@ def test_reject_with_empty_reason_string_returns_400(admin_client, submitted_ent
     })
     assert resp.status_code == 400
     assert 'rejection_reason' in resp.data
+
+
+@pytest.mark.django_db
+def test_reject_with_whitespace_reason_returns_400(admin_client, submitted_entry):
+    resp = admin_client.patch(f'/api/timesheets/{submitted_entry.id}/', {
+        'status': 'rejected',
+        'rejection_reason': '   ',
+    })
+    assert resp.status_code == 400
+    assert 'rejection_reason' in resp.data
+    submitted_entry.refresh_from_db()
+    assert submitted_entry.status == 'submitted'
+
+
+@pytest.mark.django_db
+def test_reject_strips_reason(admin_client, submitted_entry):
+    resp = admin_client.patch(f'/api/timesheets/{submitted_entry.id}/', {
+        'status': 'rejected',
+        'rejection_reason': '  Hours do not match.  ',
+    })
+    assert resp.status_code == 200
+    assert resp.data['rejection_reason'] == 'Hours do not match.'
+
+
+@pytest.mark.django_db
+def test_approve_clears_rejection_reason(admin_client, submitted_entry):
+    submitted_entry.rejection_reason = 'Earlier note'
+    submitted_entry.save(update_fields=['rejection_reason'])
+    resp = admin_client.patch(f'/api/timesheets/{submitted_entry.id}/', {'status': 'approved'})
+    assert resp.status_code == 200
+    assert resp.data['rejection_reason'] in ('', None)
+    submitted_entry.refresh_from_db()
+    assert submitted_entry.rejection_reason in ('', None)
+    assert submitted_entry.status == 'approved'
+
+
+@pytest.mark.django_db
+def test_freelancer_cannot_approve_own_entry(freelancer_client, submitted_entry):
+    resp = freelancer_client.patch(f'/api/timesheets/{submitted_entry.id}/', {'status': 'approved'})
+    assert resp.status_code == 403
+    submitted_entry.refresh_from_db()
+    assert submitted_entry.status == 'submitted'
+
+
+@pytest.mark.django_db
+def test_freelancer_cannot_change_hours(freelancer_client, submitted_entry):
+    resp = freelancer_client.patch(f'/api/timesheets/{submitted_entry.id}/', {'hours': '1.0'})
+    assert resp.status_code == 403
+    submitted_entry.refresh_from_db()
+    assert submitted_entry.hours == Decimal('8.0')
+
+
+@pytest.mark.django_db
+def test_admin_cannot_change_hours_or_contract_when_approving(admin_client, submitted_entry, active_contract):
+    resp = admin_client.patch(f'/api/timesheets/{submitted_entry.id}/', {
+        'status': 'approved',
+        'hours': '1.0',
+        'contract': active_contract.id,
+    })
+    assert resp.status_code == 400
+    submitted_entry.refresh_from_db()
+    assert submitted_entry.status == 'submitted'
+    assert submitted_entry.hours == Decimal('8.0')
+
+
+@pytest.mark.django_db
+def test_cannot_approve_entry_that_is_not_submitted(admin_client, active_contract):
+    approved = TimesheetEntry.objects.create(
+        contract=active_contract,
+        date=datetime.date(2026, 4, 8),
+        hours=Decimal('8.0'),
+        status='approved',
+    )
+    draft = TimesheetEntry.objects.create(
+        contract=active_contract,
+        date=datetime.date(2026, 4, 9),
+        hours=Decimal('8.0'),
+        status='draft',
+    )
+    approved_resp = admin_client.patch(f'/api/timesheets/{approved.id}/', {'status': 'approved'})
+    draft_resp = admin_client.patch(f'/api/timesheets/{draft.id}/', {'status': 'rejected', 'rejection_reason': 'No'})
+    assert approved_resp.status_code == 409
+    assert draft_resp.status_code == 409
+    draft.refresh_from_db()
+    assert draft.status == 'draft'

@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -129,37 +130,60 @@ class TimesheetListCreateView(APIView):
 
 class TimesheetDetailView(APIView):
     permission_classes = [IsAuthenticated]
+    approval_fields = {'status', 'rejection_reason'}
 
     def patch(self, request, pk):
         user = request.user
 
-        if hasattr(user, 'company_admin'):
-            try:
-                entry = TimesheetEntry.objects.get(
-                    pk=pk, contract__company=user.company_admin.company
+        if not hasattr(user, 'company_admin'):
+            if hasattr(user, 'freelancer'):
+                return Response(
+                    {'detail': 'Only company admins can approve or reject timesheet entries.'},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
-            except TimesheetEntry.DoesNotExist:
-                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
-        elif hasattr(user, 'freelancer'):
-            try:
-                entry = TimesheetEntry.objects.get(
-                    pk=pk, contract__freelancer=user.freelancer
-                )
-            except TimesheetEntry.DoesNotExist:
-                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
-        else:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        new_status = request.data.get('status')
-        rejection_reason = request.data.get('rejection_reason')
-
-        if new_status == TimesheetEntry.STATUS_REJECTED and not rejection_reason:
+        unexpected_fields = set(request.data.keys()) - self.approval_fields
+        if unexpected_fields:
             return Response(
-                {'rejection_reason': 'This field is required when rejecting an entry.'},
+                {
+                    'detail': (
+                        'Only status and rejection_reason can be updated. '
+                        f'Unexpected fields: {", ".join(sorted(unexpected_fields))}.'
+                    ),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        serializer = TimesheetEntrySerializer(entry, data=request.data, partial=True)
-        serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data)
+        new_status = request.data.get('status')
+        with transaction.atomic():
+            try:
+                entry = (
+                    TimesheetEntry.objects.select_for_update()
+                    .get(pk=pk, contract__company=user.company_admin.company)
+                )
+            except TimesheetEntry.DoesNotExist:
+                return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+            if (
+                entry.status != TimesheetEntry.STATUS_SUBMITTED
+                or new_status not in (
+                    TimesheetEntry.STATUS_APPROVED,
+                    TimesheetEntry.STATUS_REJECTED,
+                )
+            ):
+                return Response(
+                    {'status': 'Only a submitted entry can be approved or rejected.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            payload = {'status': new_status}
+            if new_status == TimesheetEntry.STATUS_APPROVED:
+                payload['rejection_reason'] = ''
+            else:
+                payload['rejection_reason'] = request.data.get('rejection_reason')
+
+            serializer = TimesheetEntrySerializer(entry, data=payload, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
