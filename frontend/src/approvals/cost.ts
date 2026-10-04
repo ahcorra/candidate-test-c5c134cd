@@ -12,5 +12,7 @@ export function totalCost(entries: Array<{ hours: string; daily_rate: string }>)
 }
 
 export function formatPounds(amount: number): string {
-  return `£${amount.toFixed(2)}`
+  const [whole, fraction] = amount.toFixed(2).split('.')
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  return `£${grouped}.${fraction}`
 }

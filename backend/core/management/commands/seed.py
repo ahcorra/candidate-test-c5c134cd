@@ -2,7 +2,8 @@
 Seed command — idempotent. Safe to run multiple times.
 
 Produces:
-  2 companies, 4 freelancers, 6 contracts, ~42 timesheet entries.
+  2 companies, 4 freelancers, 6 contracts, the sampled history,
+  and a NorthStar pending inbox across recent working days.
   Dates anchor to today so March and April are always the two complete
   prior calendar months relative to the seed run.
 
@@ -21,6 +22,38 @@ from accounts.models import Company, CompanyAdmin, Freelancer
 from contracts.models import Contract, TimesheetEntry
 
 SEED_PASSWORD = 'testpass123'
+
+
+def _seed_northstar_pending(contracts, today):
+    """Fill the NorthStar inbox so a reviewer can page through submitted hours.
+
+    The last 48 working days for Alex and Sam are submitted. That is enough
+    for the default page of 20, a page of 50, and a single page of 100.
+    """
+    targets = [
+        contract for contract in contracts
+        if contract.company.name == 'NorthStar Consulting' and contract.status == 'active'
+    ]
+    horizon_start = today - datetime.timedelta(days=80)
+    pending_days = _working_days(horizon_start, today - datetime.timedelta(days=1))[-48:]
+    created = 0
+    for contract in targets:
+        for index, day in enumerate(pending_days):
+            if day < contract.start_date or day > contract.end_date:
+                continue
+            if index % 4 == 0:
+                hours = Decimal('6.0')
+            elif index % 2 == 0:
+                hours = Decimal('7.5')
+            else:
+                hours = Decimal('8.0')
+            TimesheetEntry.objects.update_or_create(
+                contract=contract,
+                date=day,
+                defaults={'hours': hours, 'status': 'submitted', 'rejection_reason': None},
+            )
+            created += 1
+    return created
 
 
 def _working_days(start: datetime.date, end: datetime.date) -> list[datetime.date]:
@@ -168,8 +201,13 @@ class Command(BaseCommand):
                 )
                 entry_count += 1
 
+        pending_count = _seed_northstar_pending(contracts, today)
+
         self.stdout.write(self.style.SUCCESS(
-            f'Done — {entry_count} timesheet entries across {len(contracts)} contracts.'
+            f'Done — {entry_count} sampled timesheet entries across {len(contracts)} contracts.'
+        ))
+        self.stdout.write(self.style.SUCCESS(
+            f'NorthStar inbox — {pending_count} submitted rows for the approvals queue.'
         ))
         self.stdout.write(self.style.SUCCESS(
             'Credentials:  admin@northstar.test / testpass123  |  alex@freelance.test / testpass123'
