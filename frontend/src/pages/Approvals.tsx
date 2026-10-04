@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { TimesheetEntry } from '../api/client'
+import { entryCost, formatPounds, totalCost } from '../approvals/cost'
 import { fetchTimesheets } from '../api/timesheets'
 import { StatusBadge } from '../components/StatusBadge'
 import { useAuth } from '../hooks/useAuth'
@@ -39,6 +40,7 @@ function uniqueOptions(entries: TimesheetEntry[], kind: 'contract' | 'freelancer
 export default function Approvals() {
   const { isAdmin } = useAuth()
   const [filters, setFilters] = useState<InboxFilters>(emptyFilters)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
   const filtersActive = Object.values(filters).some((value) => value !== '')
 
   const optionsQuery = useQuery({
@@ -73,10 +75,33 @@ export default function Approvals() {
   }
 
   const entries = sortOldestFirst(entriesQuery.data ?? [])
+  const selectedEntries = entries.filter((entry) => selectedIds.has(entry.id))
+  const allVisibleSelected = entries.length > 0 && selectedEntries.length === entries.length
   const optionSource = optionsQuery.data ?? []
   const isLoading = optionsQuery.isLoading || entriesQuery.isLoading
   const isError = optionsQuery.isError || entriesQuery.isError
   const nothingWaiting = !isLoading && !isError && (optionsQuery.data?.length ?? 0) === 0
+
+  function toggleAllVisible() {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (allVisibleSelected) {
+        for (const entry of entries) next.delete(entry.id)
+      } else {
+        for (const entry of entries) next.add(entry.id)
+      }
+      return next
+    })
+  }
+
+  function toggleOne(id: number) {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   return (
     <div className="space-y-6">
@@ -172,36 +197,64 @@ export default function Approvals() {
           </button>
         </div>
       ) : (
-        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Date</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Freelancer</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Hours</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {entries.map((entry) => (
-                <tr key={entry.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-3 text-slate-700">{entry.date}</td>
-                  <td className="px-4 py-3 text-slate-700">
-                    <Link
-                      to={`/contracts/${entry.contract}`}
-                      className="text-indigo-600 hover:text-indigo-800 font-medium"
-                    >
-                      {entry.freelancer.name}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-slate-700">{entry.hours}h</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={entry.status} />
-                  </td>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+            <p className="text-slate-600">
+              Queue total <span className="font-medium text-slate-900">{formatPounds(totalCost(entries))}</span>
+              <span className="mx-2 text-slate-300">·</span>
+              Being approved{' '}
+              <span className="font-medium text-slate-900">{formatPounds(totalCost(selectedEntries))}</span>
+            </p>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 border-b border-slate-200">
+                <tr>
+                  <th className="px-4 py-3 w-10">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all visible rows"
+                      checked={allVisibleSelected}
+                      onChange={toggleAllVisible}
+                    />
+                  </th>
+                  <th className="text-left px-4 py-3 font-medium text-slate-600">Date</th>
+                  <th className="text-left px-4 py-3 font-medium text-slate-600">Freelancer</th>
+                  <th className="text-left px-4 py-3 font-medium text-slate-600">Hours</th>
+                  <th className="text-left px-4 py-3 font-medium text-slate-600">Cost</th>
+                  <th className="text-left px-4 py-3 font-medium text-slate-600">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {entries.map((entry) => (
+                  <tr key={entry.id} className="hover:bg-slate-50">
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${entry.freelancer.name} on ${entry.date}`}
+                        checked={selectedIds.has(entry.id)}
+                        onChange={() => toggleOne(entry.id)}
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-slate-700">{entry.date}</td>
+                    <td className="px-4 py-3 text-slate-700">
+                      <Link
+                        to={`/contracts/${entry.contract}`}
+                        className="text-indigo-600 hover:text-indigo-800 font-medium"
+                      >
+                        {entry.freelancer.name}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-slate-700">{entry.hours}h</td>
+                    <td className="px-4 py-3 text-slate-700">{formatPounds(entryCost(entry.hours, entry.daily_rate))}</td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={entry.status} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
