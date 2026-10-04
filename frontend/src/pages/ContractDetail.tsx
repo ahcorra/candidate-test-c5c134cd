@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { fetchContract } from '../api/contracts'
-import { fetchTimesheets } from '../api/timesheets'
+import { fetchAllTimesheets } from '../api/timesheets'
 import { StatusBadge } from '../components/StatusBadge'
 import { useAuth } from '../hooks/useAuth'
 import { Contract, TimesheetEntry } from '../api/client'
@@ -65,7 +65,7 @@ export default function ContractDetail() {
 
   const entriesQuery = useQuery({
     queryKey: ['timesheets', { contract: numId }],
-    queryFn: () => fetchTimesheets({ contract: numId }),
+    queryFn: () => fetchAllTimesheets({ contract: numId }),
     enabled: !!contractQuery.data,
   })
 

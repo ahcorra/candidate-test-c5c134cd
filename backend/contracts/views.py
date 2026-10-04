@@ -1,3 +1,6 @@
+import datetime
+from decimal import Decimal, ROUND_HALF_UP
+
 from django.db import transaction
 from django.utils.dateparse import parse_date
 from rest_framework import status
@@ -6,6 +9,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Contract, TimesheetEntry
+from .serializers import (
+    ContractCreateSerializer,
+    ContractSerializer,
+    TimesheetEntrySerializer,
+)
+
+DEFAULT_PAGE_SIZE = 20
+PAGE_SIZES = {20, 50, 100}
 
 
 def _parse_query_int(value):
@@ -20,11 +31,61 @@ def _parse_query_date(value):
         return parse_date(value)
     except ValueError:
         return None
-from .serializers import (
-    ContractCreateSerializer,
-    ContractSerializer,
-    TimesheetEntrySerializer,
-)
+
+
+def _page_params(request):
+    page_value = request.query_params.get('page')
+    if page_value is None:
+        page = 1
+    else:
+        page = _parse_query_int(page_value)
+        if page is None or page < 1:
+            return None, None, {'page': 'Must be a positive integer.'}
+
+    size_value = request.query_params.get('page_size')
+    if size_value is None:
+        page_size = DEFAULT_PAGE_SIZE
+    else:
+        page_size = _parse_query_int(size_value)
+        if page_size not in PAGE_SIZES:
+            return None, None, {'page_size': 'Must be 20, 50, or 100.'}
+
+    return page, page_size, None
+
+
+def _filter_options(queryset):
+    contracts = {}
+    freelancers = {}
+    option_rows = queryset.values_list(
+        'contract_id',
+        'contract__freelancer_id',
+        'contract__freelancer__name',
+    )
+    for contract_id, freelancer_id, freelancer_name in option_rows:
+        contracts[contract_id] = freelancer_name
+        freelancers[freelancer_id] = freelancer_name
+    contract_options = [
+        {'id': contract_id, 'name': name}
+        for contract_id, name in sorted(contracts.items(), key=lambda option: option[1])
+    ]
+    freelancer_options = [
+        {'id': freelancer_id, 'name': name}
+        for freelancer_id, name in sorted(freelancers.items(), key=lambda option: option[1])
+    ]
+    return contract_options, freelancer_options
+
+
+def _week_costs(queryset):
+    totals = {}
+    for entry_date, hours, daily_rate in queryset.values_list('date', 'hours', 'contract__daily_rate'):
+        week_start = entry_date - datetime.timedelta(days=entry_date.weekday())
+        amount = (hours * daily_rate) / Decimal('8')
+        totals[week_start] = totals.get(week_start, Decimal('0')) + amount
+    weeks = []
+    for week_start in sorted(totals):
+        cost = totals[week_start].quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        weeks.append({'week_start': week_start.isoformat(), 'cost': format(cost, 'f')})
+    return weeks
 
 
 class ContractListView(APIView):
@@ -112,6 +173,10 @@ class TimesheetListCreateView(APIView):
 
         qs = qs.select_related('contract__freelancer')
 
+        page, page_size, page_error = _page_params(request)
+        if page_error is not None:
+            return Response(page_error, status=status.HTTP_400_BAD_REQUEST)
+
         # Filter by status query param
         status_param = request.query_params.get('status')
         if status_param:
@@ -119,6 +184,9 @@ class TimesheetListCreateView(APIView):
             if status_param not in valid_statuses:
                 return Response({'status': 'Invalid status.'}, status=status.HTTP_400_BAD_REQUEST)
             qs = qs.filter(status=status_param)
+
+        # Dropdowns stay complete when the caller then narrows by person or date.
+        option_qs = qs
 
         # Filter by contract id query param
         # TODO: move filter logic to a proper FilterSet class when we add django-filter
@@ -161,7 +229,19 @@ class TimesheetListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return Response(TimesheetEntrySerializer(qs, many=True).data)
+        ordered = qs.order_by('date', 'id')
+        total = ordered.count()
+        start = (page - 1) * page_size
+        contracts, freelancers = _filter_options(option_qs)
+        return Response({
+            'count': total,
+            'page': page,
+            'page_size': page_size,
+            'results': TimesheetEntrySerializer(ordered[start:start + page_size], many=True).data,
+            'weeks': _week_costs(ordered),
+            'contracts': contracts,
+            'freelancers': freelancers,
+        })
 
     def post(self, request):
         if not hasattr(request.user, 'freelancer'):

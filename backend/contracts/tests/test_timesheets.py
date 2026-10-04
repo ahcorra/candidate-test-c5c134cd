@@ -6,6 +6,10 @@ import pytest
 from contracts.models import TimesheetEntry
 
 
+def _results(response):
+    return response.data['results']
+
+
 @pytest.mark.django_db
 def test_freelancer_can_submit_entry(freelancer_client, active_contract):
     resp = freelancer_client.post('/api/timesheets/', {
@@ -64,14 +68,14 @@ def test_timesheet_list_status_filter(admin_client, submitted_entry, active_cont
     )
     resp = admin_client.get('/api/timesheets/?status=submitted')
     assert resp.status_code == 200
-    assert all(e['status'] == 'submitted' for e in resp.data)
+    assert all(row['status'] == 'submitted' for row in _results(resp))
 
 
 @pytest.mark.django_db
 def test_timesheet_list_contract_filter(admin_client, submitted_entry, active_contract):
     resp = admin_client.get(f'/api/timesheets/?contract={active_contract.id}')
     assert resp.status_code == 200
-    assert all(e['contract'] == active_contract.id for e in resp.data)
+    assert all(row['contract'] == active_contract.id for row in _results(resp))
 
 
 @pytest.mark.django_db
@@ -121,15 +125,15 @@ def test_timesheet_list_requires_auth(api_client):
 def test_freelancer_can_list_own_timesheets(freelancer_client, submitted_entry):
     resp = freelancer_client.get('/api/timesheets/')
     assert resp.status_code == 200
-    assert len(resp.data) == 1
-    assert resp.data[0]['id'] == submitted_entry.id
+    assert len(_results(resp)) == 1
+    assert _results(resp)[0]['id'] == submitted_entry.id
 
 
 @pytest.mark.django_db
 def test_admin_can_list_company_timesheets(admin_client, submitted_entry):
     resp = admin_client.get('/api/timesheets/')
     assert resp.status_code == 200
-    assert any(e['id'] == submitted_entry.id for e in resp.data)
+    assert any(row['id'] == submitted_entry.id for row in _results(resp))
 
 
 @pytest.mark.django_db
@@ -142,7 +146,7 @@ def test_admin_list_excludes_other_company_entries(admin_client, other_contract)
     )
     resp = admin_client.get('/api/timesheets/')
     assert resp.status_code == 200
-    assert all(e['id'] != other_entry.id for e in resp.data)
+    assert all(row['id'] != other_entry.id for row in _results(resp))
 
 
 @pytest.mark.django_db
@@ -181,7 +185,8 @@ def test_timesheet_response_shape(freelancer_client, active_contract):
 def test_status_filter_returns_empty_list(admin_client, submitted_entry):
     resp = admin_client.get('/api/timesheets/?status=approved')
     assert resp.status_code == 200
-    assert resp.data == []
+    assert _results(resp) == []
+    assert resp.data['count'] == 0
 
 
 @pytest.mark.django_db
@@ -291,11 +296,11 @@ def test_timesheet_list_filters_by_freelancer_and_date(admin_client, submitted_e
 
     by_freelancer = admin_client.get(f'/api/timesheets/?freelancer={active_contract.freelancer_id}')
     assert by_freelancer.status_code == 200
-    assert {row['id'] for row in by_freelancer.data} == {submitted_entry.id}
+    assert {row['id'] for row in _results(by_freelancer)} == {submitted_entry.id}
 
     by_date = admin_client.get('/api/timesheets/?date_from=2026-04-08&date_to=2026-04-08')
     assert by_date.status_code == 200
-    assert {row['id'] for row in by_date.data} == {other_entry.id}
+    assert {row['id'] for row in _results(by_date)} == {other_entry.id}
 
 
 @pytest.mark.django_db
@@ -310,14 +315,15 @@ def test_timesheet_list_filters_do_not_cross_companies(admin_client, other_contr
         f'/api/timesheets/?freelancer={other_contract.freelancer_id}&date_from=2026-04-01&date_to=2026-04-30'
     )
     assert resp.status_code == 200
-    assert resp.data == []
+    assert _results(resp) == []
+    assert resp.data['count'] == 0
 
 
 @pytest.mark.django_db
 def test_timesheet_list_includes_freelancer_and_rate(admin_client, submitted_entry, active_contract):
     resp = admin_client.get('/api/timesheets/')
     assert resp.status_code == 200
-    row = next(item for item in resp.data if item['id'] == submitted_entry.id)
+    row = next(item for item in _results(resp) if item['id'] == submitted_entry.id)
     assert row['contract'] == active_contract.id
     assert row['contract_id'] == active_contract.id
     assert row['daily_rate'] == '600.00'
@@ -347,3 +353,47 @@ def test_cannot_approve_entry_that_is_not_submitted(admin_client, active_contrac
     assert draft_resp.status_code == 409
     draft.refresh_from_db()
     assert draft.status == 'draft'
+
+
+@pytest.mark.django_db
+def test_timesheet_list_pages_oldest_first(admin_client, active_contract):
+    first_day = datetime.date(2026, 7, 6)
+    for offset in range(21):
+        TimesheetEntry.objects.create(
+            contract=active_contract,
+            date=first_day + datetime.timedelta(days=offset),
+            hours=Decimal('8.0'),
+            status='submitted',
+        )
+
+    first_page = admin_client.get('/api/timesheets/?status=submitted')
+    assert first_page.status_code == 200
+    assert first_page.data['count'] == 21
+    assert first_page.data['page'] == 1
+    assert first_page.data['page_size'] == 20
+    assert len(_results(first_page)) == 20
+    assert _results(first_page)[0]['date'] == '2026-07-06'
+
+    second_page = admin_client.get('/api/timesheets/?status=submitted&page=2')
+    assert len(_results(second_page)) == 1
+    assert _results(second_page)[0]['date'] == '2026-07-26'
+
+    week_total = sum(Decimal(week['cost']) for week in first_page.data['weeks'])
+    assert week_total == Decimal('12600.00')
+
+
+@pytest.mark.django_db
+def test_timesheet_list_accepts_page_sizes(admin_client, active_contract):
+    TimesheetEntry.objects.create(
+        contract=active_contract,
+        date=datetime.date(2026, 8, 3),
+        hours=Decimal('8.0'),
+        status='submitted',
+    )
+    page_of_fifty = admin_client.get('/api/timesheets/?page_size=50')
+    page_of_hundred = admin_client.get('/api/timesheets/?page_size=100')
+    assert page_of_fifty.data['page_size'] == 50
+    assert page_of_hundred.data['page_size'] == 100
+    assert admin_client.get('/api/timesheets/?page_size=10').status_code == 400
+    assert admin_client.get('/api/timesheets/?page=0').status_code == 400
+    assert admin_client.get('/api/timesheets/?page=abc').status_code == 400
